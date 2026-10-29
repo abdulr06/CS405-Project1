@@ -102,7 +102,16 @@ footer{padding:26px 0 60px;color:var(--ink2);font-size:14px}
 <section id="b">
   <h2><span class="badge">Part B</span>Scene graph <span class="badge pts">15 points</span></h2>
   <p>Objects are rarely independent. Build a small tree in which every node holds a local transform, and a node's world matrix is the product of the matrices along the path from the root.</p>
-  <div class="demo" id="d-graph"></div>
+  <div class="demo" id="d-graph">
+    <div class="row">
+      <div>
+        <canvas id="canvas-graph" width="560" height="380"></canvas>
+      </div>
+      <div>
+        <pre class="mat" id="tree-readout" style="min-width:300px; height:380px; overflow:auto;"></pre>
+      </div>
+    </div>
+  </div>
   <div class="grid2">
     <div>
       <h3>What you implement</h3>
