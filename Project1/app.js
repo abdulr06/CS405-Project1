@@ -1,7 +1,9 @@
 import { Mat4 } from './mat4.js';
 import { SceneNode } from './scene.js';
 
-// Camera & Math Helpers
+// -------------------------------------------------------------
+// Math & Camera Helpers
+// -------------------------------------------------------------
 function lookAt(eye, target, up) {
     return Mat4.lookAt(eye, target, up);
 }
@@ -24,7 +26,9 @@ function norm(v) {
     return [v[0] / len, v[1] / len, v[2] / len];
 }
 
-// 3D Cube Data (Position xyz, Color rgb)
+// -------------------------------------------------------------
+// Geometry Data
+// -------------------------------------------------------------
 const CUBE_VERTICES = new Float32Array([
     // Front
     -0.5, -0.5,  0.5,  1, 0.2, 0.2,   0.5, -0.5,  0.5,  1, 0.2, 0.2,   0.5,  0.5,  0.5,  1, 0.2, 0.2,  -0.5,  0.5,  0.5,  1, 0.2, 0.2,
@@ -49,6 +53,19 @@ const CUBE_INDICES = new Uint16Array([
     20, 21, 22,   20, 22, 23,
 ]);
 
+function createGroundGrid(size = 5, divisions = 10) {
+    const verts = [];
+    const step = (size * 2) / divisions;
+    for (let i = -size; i <= size; i += step) {
+        verts.push(-size, 0, i,  size, 0, i);
+        verts.push(i, 0, -size,  i, 0, size);
+    }
+    return new Float32Array(verts);
+}
+
+// -------------------------------------------------------------
+// WGSL Shaders
+// -------------------------------------------------------------
 const SHADER_CODE = /* wgsl */ `
 struct Uniforms {
     mvpMatrix : mat4x4<f32>,
@@ -99,6 +116,45 @@ fn fs_main() -> @location(0) vec4<f32> {
 }
 `;
 
+const TEXTURE_SHADER = /* wgsl */ `
+struct VertexOutput {
+    @builtin(position) position : vec4<f32>,
+    @location(0) uv : vec2<f32>,
+};
+
+@vertex
+fn vs_main(@builtin(vertex_index) vertexIndex : u32) -> VertexOutput {
+    var pos = array<vec2<f32>, 4>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>( 1.0, -1.0),
+        vec2<f32>(-1.0,  1.0),
+        vec2<f32>( 1.0,  1.0)
+    );
+    var uv = array<vec2<f32>, 4>(
+        vec2<f32>(0.0, 1.0),
+        vec2<f32>(1.0, 1.0),
+        vec2<f32>(0.0, 0.0),
+        vec2<f32>(1.0, 0.0)
+    );
+
+    var output : VertexOutput;
+    output.position = vec4<f32>(pos[vertexIndex], 0.99, 1.0);
+    output.uv = uv[vertexIndex];
+    return output;
+}
+
+@group(0) @binding(0) var texSampler : sampler;
+@group(0) @binding(1) var texData : texture_2d<f32>;
+
+@fragment
+fn fs_main(input : VertexOutput) -> @location(0) vec4<f32> {
+    return textureSample(texData, texSampler, input.uv);
+}
+`;
+
+// -------------------------------------------------------------
+// Main Function
+// -------------------------------------------------------------
 async function main() {
     if (!navigator.gpu) {
         alert("WebGPU is not supported.");
@@ -151,12 +207,12 @@ async function main() {
     setupPartA(device, format, pipeline, vertexBuffer, indexBuffer);
     setupPartB(device, format, pipeline, vertexBuffer, indexBuffer);
     setupPartC(device, format);
+    await setupPartD(device, format);
 }
 
 // -------------------------------------------------------------
 // PART A: Transformations
 // -------------------------------------------------------------
-
 function setupPartA(device, format, pipeline, vertexBuffer, indexBuffer) {
     const canvasTRS = document.getElementById('canvas-trs');
     const canvasSRT = document.getElementById('canvas-srt');
@@ -186,7 +242,7 @@ function setupPartA(device, format, pipeline, vertexBuffer, indexBuffer) {
     const depthTextureTRS = device.createTexture({ size: [canvasTRS.width, canvasTRS.height], format: 'depth24plus', usage: GPUTextureUsage.RENDER_ATTACHMENT });
     const depthTextureSRT = device.createTexture({ size: [canvasSRT.width, canvasSRT.height], format: 'depth24plus', usage: GPUTextureUsage.RENDER_ATTACHMENT });
 
-    const state = { tx: 1.5, ry: 0.6, scale: 1.4 };
+    const state = { tx: -2.0, ry: 1.16, scale: 0.95 };
 
     function renderPartA() {
         const V = lookAt([3, 3, 5], [0, 0, 0], [0, 1, 0]);
@@ -303,7 +359,7 @@ function setupPartB(device, format, pipeline, vertexBuffer, indexBuffer) {
 
     let isAnimated = false;
     let animAngle = 0;
-    let a1 = 0.5, a2 = -0.8, a3 = 0.9;
+    let a1 = 3.14, a2 = 0.71, a3 = -0.77;
 
     setupPartBUI(a1, a2, a3, (vals, anim) => {
         if (vals.a1 !== undefined) a1 = vals.a1;
@@ -419,20 +475,6 @@ function setupPartBUI(a1, a2, a3, onChange) {
 // -------------------------------------------------------------
 // PART C: Camera and Projection
 // -------------------------------------------------------------
-
-// Helper: Generate grid line vertices on the y = 0 ground plane
-function createGroundGrid(size = 5, divisions = 10) {
-    const verts = [];
-    const step = (size * 2) / divisions;
-    for (let i = -size; i <= size; i += step) {
-        // Line parallel to X axis
-        verts.push(-size, 0, i,  size, 0, i);
-        // Line parallel to Z axis
-        verts.push(i, 0, -size,  i, 0, size);
-    }
-    return new Float32Array(verts);
-}
-
 function setupPartC(device, format) {
     const canvasWorld = document.getElementById('canvas-cam-world');
     const canvasView = document.getElementById('canvas-cam-view');
@@ -447,7 +489,6 @@ function setupPartC(device, format) {
     const shaderModule = device.createShaderModule({ code: SHADER_CODE });
     const lineShaderModule = device.createShaderModule({ code: LINE_SHADER });
 
-    // Triangle pipeline for 3D boxes
     const cubePipeline = device.createRenderPipeline({
         layout: 'auto',
         vertex: {
@@ -460,7 +501,6 @@ function setupPartC(device, format) {
         depthStencil: { depthWriteEnabled: true, depthCompare: 'less', format: 'depth24plus' }
     });
 
-    // Line pipeline for Ground Grid & Camera Frustum
     const linePipeline = device.createRenderPipeline({
         layout: 'auto',
         vertex: { module: lineShaderModule, entryPoint: 'vs_main', buffers: [{ arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }] }] },
@@ -469,43 +509,40 @@ function setupPartC(device, format) {
         depthStencil: { depthWriteEnabled: true, depthCompare: 'less', format: 'depth24plus' }
     });
 
-    // Buffers for Cubes
     const cubeVB = device.createBuffer({ size: CUBE_VERTICES.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
     device.queue.writeBuffer(cubeVB, 0, CUBE_VERTICES);
 
     const cubeIB = device.createBuffer({ size: CUBE_INDICES.byteLength, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST });
     device.queue.writeBuffer(cubeIB, 0, CUBE_INDICES);
 
-    // Buffers for Ground Grid
     const gridData = createGroundGrid(4, 8);
     const gridVB = device.createBuffer({ size: gridData.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
     device.queue.writeBuffer(gridVB, 0, gridData);
 
-    // Uniform Buffers
-    const cubeUB = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     const lineUB = device.createBuffer({ size: 80, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-
-    const cubeBG = device.createBindGroup({ layout: cubePipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: cubeUB } }] });
     const lineBG = device.createBindGroup({ layout: linePipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: lineUB } }] });
 
     const depthWorld = device.createTexture({ size: [canvasWorld.width, canvasWorld.height], format: 'depth24plus', usage: GPUTextureUsage.RENDER_ATTACHMENT });
     const depthView = device.createTexture({ size: [canvasView.width, canvasView.height], format: 'depth24plus', usage: GPUTextureUsage.RENDER_ATTACHMENT });
 
-    // Scene setup: 3 boxes sitting on the ground (y = height/2)
     const boxes = [
-        { pos: [0, 0.5, 0], scale: [1.0, 1.0, 1.0] },         // Center Main Cube
-        { pos: [-1.4, 0.35, -0.6], scale: [0.7, 0.7, 0.7] },  // Left Back Smaller Cube
-        { pos: [1.2, 0.6, 0.4], scale: [0.8, 1.2, 0.8] }      // Right Front Tall Box
+        { pos: [0, 0.5, 0], scale: [1.0, 1.0, 1.0] }
     ];
 
-    // Interactive Camera Parameters
+    boxes.forEach(b => {
+        b.bufView = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+        b.bgView = device.createBindGroup({ layout: cubePipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: b.bufView } }] });
+
+        b.bufWorld = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+        b.bgWorld = device.createBindGroup({ layout: cubePipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: b.bufWorld } }] });
+    });
+
     const cam = {
         cyaw: 0.5, cpitch: 0.3, cdist: 6.5,
         fov: 50, near: 1.0, far: 9.0, isPersp: true,
         wyaw: 0.8, wpitch: 0.45, wdist: 12.0
     };
 
-    // Orbit Drag Controls on World Canvas
     let isDragging = false, lastX = 0, lastY = 0;
     canvasWorld.addEventListener('pointerdown', (e) => { isDragging = true; lastX = e.clientX; lastY = e.clientY; });
     window.addEventListener('pointermove', (e) => {
@@ -540,7 +577,6 @@ function setupPartC(device, format) {
             Mat4.perspective(cam.fov * Math.PI / 180, aspect, cam.near, cam.far) : 
             Mat4.ortho(4, aspect, cam.near, cam.far);
 
-        // World Inspection Camera
         const worldEye = [
             cam.wdist * Math.cos(cam.wpitch) * Math.sin(cam.wyaw),
             1.5 + cam.wdist * Math.sin(cam.wpitch),
@@ -550,7 +586,6 @@ function setupPartC(device, format) {
         const Pw = Mat4.perspective(0.8, aspect, 0.1, 60);
         const VPw = Mat4.multiply(Pw, Vw);
 
-        // Update Matrix Text Display
         if (matInfo) {
             matInfo.textContent = 
 `V = lookAt(eye, target, up)
@@ -561,39 +596,37 @@ ${Mat4.format(Pc)}`;
 
         const VPc = Mat4.multiply(Pc, Vc);
 
-        // 1. Draw View Canvas (What the camera sees)
-        drawScene(ctxView, depthView, VPc);
-
-        // 2. Draw World View Canvas (Boxes + Ground Grid + Camera Frustum)
+        drawScene(ctxView, depthView, VPc, false);
         drawWorldView(ctxWorld, depthWorld, VPw, eye, target, up, aspect);
     }
 
-    function drawScene(ctx, depthTexture, VP) {
+    function drawScene(ctx, depthTexture, VP, isWorldPass) {
         const commandEncoder = device.createCommandEncoder();
         const renderPass = commandEncoder.beginRenderPass({
             colorAttachments: [{ view: ctx.getCurrentTexture().createView(), clearValue: { r: 0.1, g: 0.1, b: 0.12, a: 1.0 }, loadOp: 'clear', storeOp: 'store' }],
             depthStencilAttachment: { view: depthTexture.createView(), depthClearValue: 1.0, depthLoadOp: 'clear', depthStoreOp: 'store' }
         });
 
-        // Draw Ground Grid
         renderPass.setPipeline(linePipeline);
         renderPass.setVertexBuffer(0, gridVB);
         const lineUniforms = new Float32Array(20);
         lineUniforms.set(VP, 0);
-        lineUniforms.set([0.3, 0.3, 0.35, 1.0], 16); // Soft gray color for grid
+        lineUniforms.set([0.3, 0.3, 0.35, 1.0], 16);
         device.queue.writeBuffer(lineUB, 0, lineUniforms);
         renderPass.setBindGroup(0, lineBG);
         renderPass.draw(gridData.length / 3);
 
-        // Draw 3 Cubes
         renderPass.setPipeline(cubePipeline);
         renderPass.setVertexBuffer(0, cubeVB);
         renderPass.setIndexBuffer(cubeIB, 'uint16');
 
         boxes.forEach(b => {
             const M = Mat4.multiply(Mat4.translate(...b.pos), Mat4.scale(...b.scale));
-            device.queue.writeBuffer(cubeUB, 0, Mat4.multiply(VP, M));
-            renderPass.setBindGroup(0, cubeBG);
+            const buf = isWorldPass ? b.bufWorld : b.bufView;
+            const bg = isWorldPass ? b.bgWorld : b.bgView;
+
+            device.queue.writeBuffer(buf, 0, Mat4.multiply(VP, M));
+            renderPass.setBindGroup(0, bg);
             renderPass.drawIndexed(CUBE_INDICES.length);
         });
 
@@ -602,10 +635,8 @@ ${Mat4.format(Pc)}`;
     }
 
     function drawWorldView(ctx, depthTexture, VPw, eye, target, up, aspect) {
-        // Draw standard scene (grid + 3 boxes) from inspection perspective
-        drawScene(ctx, depthTexture, VPw);
+        drawScene(ctx, depthTexture, VPw, true);
 
-        // Compute Frustum Pyramid Wireframe
         const f = norm(sub(target, eye));
         const r = norm(cross(f, up));
         const u = cross(r, f);
@@ -624,22 +655,18 @@ ${Mat4.format(Pc)}`;
         const fr = [corner(cam.far, -1, -1), corner(cam.far, 1, -1), corner(cam.far, 1, 1), corner(cam.far, -1, 1)];
 
         const frustumLines = new Float32Array([
-            // Near plane
             ...nr[0], ...nr[1],  ...nr[1], ...nr[2],  ...nr[2], ...nr[3],  ...nr[3], ...nr[0],
-            // Far plane
             ...fr[0], ...fr[1],  ...fr[1], ...fr[2],  ...fr[2], ...fr[3],  ...fr[3], ...fr[0],
-            // Connecting edges
             ...nr[0], ...fr[0],  ...nr[1], ...fr[1],  ...nr[2], ...fr[2],  ...nr[3], ...fr[3],
-            // Aim line from camera eye to target
             ...eye, ...target
         ]);
 
         const lineVB = device.createBuffer({ size: frustumLines.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
-        device.queue.writeBuffer(lineVB, 0, frustumLines);
+        device.queue.writeBuffer(lineVB, 0, new Float32Array(frustumLines));
 
         const frustumUniforms = new Float32Array(20);
         frustumUniforms.set(VPw, 0);
-        frustumUniforms.set([0.85, 0.35, 0.15, 1.0], 16); // Orange/red frustum color
+        frustumUniforms.set([0.85, 0.35, 0.15, 1.0], 16);
         device.queue.writeBuffer(lineUB, 0, frustumUniforms);
 
         const commandEncoder = device.createCommandEncoder();
@@ -691,6 +718,375 @@ function setupPartCUI(cam, onChange) {
         btnProj.classList.toggle('on', cam.isPersp);
         onChange();
     });
+}
+
+// -------------------------------------------------------------
+// PART D: Curves Over Painting
+// -------------------------------------------------------------
+function evalBezier(p0, p1, p2, p3, t) {
+    const u = 1 - t;
+    const tt = t * t;
+    const uu = u * u;
+    const uuu = uu * u;
+    const ttt = tt * t;
+
+    return [
+        uuu * p0[0] + 3 * uu * t * p1[0] + 3 * u * tt * p2[0] + ttt * p3[0],
+        uuu * p0[1] + 3 * uu * t * p1[1] + 3 * u * tt * p2[1] + ttt * p3[1]
+    ];
+}
+
+function evalBezierTangent(p0, p1, p2, p3, t) {
+    const u = 1 - t;
+    return [
+        3 * u * u * (p1[0] - p0[0]) + 6 * u * t * (p2[0] - p1[0]) + 3 * t * t * (p3[0] - p2[0]),
+        3 * u * u * (p1[1] - p0[1]) + 6 * u * t * (p2[1] - p1[1]) + 3 * t * t * (p3[1] - p2[1])
+    ];
+}
+
+function evalCatmullRom(p0, p1, p2, p3, t) {
+    const t2 = t * t;
+    const t3 = t2 * t;
+
+    const f0 = -0.5 * t3 + t2 - 0.5 * t;
+    const f1 = 1.5 * t3 - 2.5 * t2 + 1.0;
+    const f2 = -1.5 * t3 + 2.0 * t2 + 0.5 * t;
+    const f3 = 0.5 * t3 - 0.5 * t2;
+
+    return [
+        p0[0] * f0 + p1[0] * f1 + p2[0] * f2 + p3[0] * f3,
+        p0[1] * f0 + p1[1] * f1 + p2[1] * f2 + p3[1] * f3
+    ];
+}
+
+async function setupPartD(device, format) {
+    const canvas = document.getElementById('canvas-curves');
+    const jsonOut = document.getElementById('json-readout');
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('webgpu');
+    ctx.configure({ device, format, alphaMode: 'opaque' });
+
+    let texture;
+    if (window.KAVUNLU_SRC) {
+        const img = new Image();
+        img.src = window.KAVUNLU_SRC;
+        await img.decode();
+        const bitmap = await createImageBitmap(img);
+
+        texture = device.createTexture({
+            size: [bitmap.width, bitmap.height, 1],
+            format: 'rgba8unorm',
+            usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+        });
+
+        device.queue.copyExternalImageToTexture(
+            { source: bitmap },
+            { texture: texture },
+            [bitmap.width, bitmap.height]
+        );
+    }
+
+    const texShaderModule = device.createShaderModule({ code: TEXTURE_SHADER });
+    const texPipeline = device.createRenderPipeline({
+        layout: 'auto',
+        vertex: { module: texShaderModule, entryPoint: 'vs_main' },
+        fragment: { module: texShaderModule, entryPoint: 'fs_main', targets: [{ format }] },
+        primitive: { topology: 'triangle-strip' },
+        depthStencil: { depthWriteEnabled: true, depthCompare: 'less-equal', format: 'depth24plus' }
+    });
+
+    const sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
+    let texBG;
+    if (texture) {
+        texBG = device.createBindGroup({
+            layout: texPipeline.getBindGroupLayout(0),
+            entries: [
+                { binding: 0, resource: sampler },
+                { binding: 1, resource: texture.createView() }
+            ]
+        });
+    }
+
+    const rawPoints = [
+        [0.10, 0.75], [0.22, 0.30], [0.38, 0.25], [0.50, 0.60],
+        [0.62, 0.95], [0.78, 0.70], [0.90, 0.35]
+    ];
+
+    let curveType = 'bezier';
+    let showCasteljau = true;
+    let isAnimating = false;
+    let animT = 0;
+    let draggedIdx = -1;
+
+    function enforceC1() {
+        rawPoints[4][0] = 2 * rawPoints[3][0] - rawPoints[2][0];
+        rawPoints[4][1] = 2 * rawPoints[3][1] - rawPoints[2][1];
+    }
+    enforceC1();
+
+    setupPartDUI({
+        onToggleType: (t) => { curveType = t; renderPartD(); },
+        onToggleCasteljau: (v) => { showCasteljau = v; renderPartD(); },
+        onToggleAnim: (v) => { 
+            isAnimating = v; 
+            if (isAnimating) requestAnimationFrame(animLoop);
+            else renderPartD();
+        },
+        onExportJSON: () => exportJSON()
+    });
+
+    canvas.addEventListener('pointerdown', (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const mx = (e.clientX - rect.left) / canvas.width;
+        const my = (e.clientY - rect.top) / canvas.height;
+
+        let minDist = 0.08;
+        draggedIdx = -1;
+        rawPoints.forEach((p, i) => {
+            const d = Math.hypot(p[0] - mx, p[1] - my);
+            if (d < minDist) {
+                minDist = d;
+                draggedIdx = i;
+            }
+        });
+    });
+
+    window.addEventListener('pointermove', (e) => {
+        if (draggedIdx < 0) return;
+        const rect = canvas.getBoundingClientRect();
+        const mx = Math.max(0, Math.min(1, (e.clientX - rect.left) / canvas.width));
+        const my = Math.max(0, Math.min(1, (e.clientY - rect.top) / canvas.height));
+
+        const dx = mx - rawPoints[draggedIdx][0];
+        const dy = my - rawPoints[draggedIdx][1];
+
+        rawPoints[draggedIdx] = [mx, my];
+
+        if (draggedIdx === 3) {
+            rawPoints[2][0] += dx; rawPoints[2][1] += dy;
+            rawPoints[4][0] += dx; rawPoints[4][1] += dy;
+        } else if (draggedIdx === 2) {
+            enforceC1();
+        } else if (draggedIdx === 4) {
+            rawPoints[2][0] = 2 * rawPoints[3][0] - rawPoints[4][0];
+            rawPoints[2][1] = 2 * rawPoints[3][1] - rawPoints[4][1];
+        }
+
+        exportJSON();
+        renderPartD();
+    });
+
+    window.addEventListener('pointerup', () => { draggedIdx = -1; });
+
+    function exportJSON() {
+        const data = {
+            type: curveType,
+            c1_continuous: true,
+            control_points: rawPoints.map(p => ({ x: Number(p[0].toFixed(3)), y: Number(p[1].toFixed(3)) }))
+        };
+        if (jsonOut) jsonOut.textContent = JSON.stringify(data, null, 2);
+    }
+    exportJSON();
+
+    const lineShaderModule = device.createShaderModule({ code: LINE_SHADER });
+    const linePipeline = device.createRenderPipeline({
+        layout: 'auto',
+        vertex: { module: lineShaderModule, entryPoint: 'vs_main', buffers: [{ arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }] }] },
+        fragment: { module: lineShaderModule, entryPoint: 'fs_main', targets: [{ format }] },
+        primitive: { topology: 'line-list' },
+        depthStencil: { depthWriteEnabled: false, depthCompare: 'always', format: 'depth24plus' }
+    });
+
+    const depthTex = device.createTexture({ size: [canvas.width, canvas.height], format: 'depth24plus', usage: GPUTextureUsage.RENDER_ATTACHMENT });
+
+    function animLoop() {
+        if (!isAnimating) return;
+        animT = (animT + 0.008) % 2.0;
+        renderPartD();
+        requestAnimationFrame(animLoop);
+    }
+
+    function renderPartD() {
+        // Generate Curve Wireframe Lines in NDC [-1, 1] Space
+        const lineVerts = [];
+        const toNDC = (p) => [p[0] * 2 - 1, 1 - p[1] * 2, 0];
+
+        const aspect = canvas.width / canvas.height;
+
+        // Helper to draw a square handle marker (+) at a control point
+        const addHandleMarker = (p, isAnchor = false) => {
+            const rx = isAnchor ? 0.014 : 0.010;
+            const ry = rx * aspect;
+
+            const c0 = [p[0] - rx, p[1] - ry];
+            const c1 = [p[0] + rx, p[1] - ry];
+            const c2 = [p[0] + rx, p[1] + ry];
+            const c3 = [p[0] - rx, p[1] + ry];
+
+            // Outer box
+            lineVerts.push(...toNDC(c0), ...toNDC(c1));
+            lineVerts.push(...toNDC(c1), ...toNDC(c2));
+            lineVerts.push(...toNDC(c2), ...toNDC(c3));
+            lineVerts.push(...toNDC(c3), ...toNDC(c0));
+
+            // Inner crosshair
+            lineVerts.push(...toNDC([p[0] - rx, p[1]]), ...toNDC([p[0] + rx, p[1]]));
+            lineVerts.push(...toNDC([p[0], p[1] - ry]), ...toNDC([p[0], p[1] + ry]));
+        };
+
+        // 1. Draw Control Polygon Lines
+        for (let i = 0; i < rawPoints.length - 1; i++) {
+            lineVerts.push(...toNDC(rawPoints[i]), ...toNDC(rawPoints[i + 1]));
+        }
+
+        // 2. Draw Handle Dots/Markers for every control point
+        rawPoints.forEach((p, idx) => {
+            // Anchor points (P0, P3, P6) get slightly larger boxes than control handles
+            const isAnchor = (idx === 0 || idx === 3 || idx === 6);
+            addHandleMarker(p, isAnchor);
+        });
+
+        // 3. Evaluate & Draw Curve Segments
+        const samples = 60;
+        if (curveType === 'bezier') {
+            // Segment 1 (P0, P1, P2, P3)
+            let prev = evalBezier(rawPoints[0], rawPoints[1], rawPoints[2], rawPoints[3], 0);
+            for (let i = 1; i <= samples; i++) {
+                const curr = evalBezier(rawPoints[0], rawPoints[1], rawPoints[2], rawPoints[3], i / samples);
+                lineVerts.push(...toNDC(prev), ...toNDC(curr));
+                prev = curr;
+            }
+            // Segment 2 (P3, P4, P5, P6)
+            prev = evalBezier(rawPoints[3], rawPoints[4], rawPoints[5], rawPoints[6], 0);
+            for (let i = 1; i <= samples; i++) {
+                const curr = evalBezier(rawPoints[3], rawPoints[4], rawPoints[5], rawPoints[6], i / samples);
+                lineVerts.push(...toNDC(prev), ...toNDC(curr));
+                prev = curr;
+            }
+        } else {
+            // Catmull-Rom Evaluation
+            let prev = evalCatmullRom(rawPoints[0], rawPoints[0], rawPoints[1], rawPoints[2], 0);
+            for (let i = 1; i <= samples * 2; i++) {
+                const segT = (i / (samples * 2)) * 2;
+                const curr = segT <= 1 ?
+                    evalCatmullRom(rawPoints[0], rawPoints[1], rawPoints[2], rawPoints[3], segT) :
+                    evalCatmullRom(rawPoints[1], rawPoints[2], rawPoints[3], rawPoints[4], segT - 1);
+                lineVerts.push(...toNDC(prev), ...toNDC(curr));
+                prev = curr;
+            }
+        }
+
+        // 4. Animated Marker & Tangent Vector along C(t)
+        const segIndex = animT < 1.0 ? 0 : 1;
+        const localT = animT % 1.0;
+        let pos, tan;
+
+        if (segIndex === 0) {
+            pos = evalBezier(rawPoints[0], rawPoints[1], rawPoints[2], rawPoints[3], localT);
+            tan = evalBezierTangent(rawPoints[0], rawPoints[1], rawPoints[2], rawPoints[3], localT);
+        } else {
+            pos = evalBezier(rawPoints[3], rawPoints[4], rawPoints[5], rawPoints[6], localT);
+            tan = evalBezierTangent(rawPoints[3], rawPoints[4], rawPoints[5], rawPoints[6], localT);
+        }
+
+        const normTan = norm([tan[0], tan[1], 0]);
+        const tanTip = [pos[0] + normTan[0] * 0.08, pos[1] + normTan[1] * 0.08];
+        lineVerts.push(...toNDC(pos), ...toNDC(tanTip));
+
+        // 5. De Casteljau Lines
+        if (showCasteljau && curveType === 'bezier') {
+            const p = segIndex === 0 ?
+                [rawPoints[0], rawPoints[1], rawPoints[2], rawPoints[3]] :
+                [rawPoints[3], rawPoints[4], rawPoints[5], rawPoints[6]];
+
+            const q0 = [p[0][0] + localT * (p[1][0] - p[0][0]), p[0][1] + localT * (p[1][1] - p[0][1])];
+            const q1 = [p[1][0] + localT * (p[2][0] - p[1][0]), p[1][1] + localT * (p[2][1] - p[1][1])];
+            const q2 = [p[2][0] + localT * (p[3][0] - p[2][0]), p[2][1] + localT * (p[3][1] - p[2][1])];
+
+            const r0 = [q0[0] + localT * (q1[0] - q0[0]), q0[1] + localT * (q1[1] - q0[1])];
+            const r1 = [q1[0] + localT * (q2[0] - q1[0]), q1[1] + localT * (q2[1] - q1[1])];
+
+            lineVerts.push(...toNDC(q0), ...toNDC(q1), ...toNDC(q1), ...toNDC(q2));
+            lineVerts.push(...toNDC(r0), ...toNDC(r1));
+        }
+
+        const lineVB = device.createBuffer({ size: Math.max(128, lineVerts.length * 4), usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+        device.queue.writeBuffer(lineVB, 0, new Float32Array(lineVerts));
+
+        const lineUB = device.createBuffer({ size: 80, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+        const lineBG = device.createBindGroup({ layout: linePipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: lineUB } }] });
+
+        const lineUniforms = new Float32Array(20);
+        lineUniforms.set(Mat4.create(), 0);
+        lineUniforms.set([0.95, 0.75, 0.2, 1.0], 16);
+        device.queue.writeBuffer(lineUB, 0, lineUniforms);
+
+        const commandEncoder = device.createCommandEncoder();
+        const renderPass = commandEncoder.beginRenderPass({
+            colorAttachments: [{ view: ctx.getCurrentTexture().createView(), clearValue: { r: 0.1, g: 0.1, b: 0.12, a: 1.0 }, loadOp: 'clear', storeOp: 'store' }],
+            depthStencilAttachment: { view: depthTex.createView(), depthClearValue: 1.0, depthLoadOp: 'clear', depthStoreOp: 'store' }
+        });
+
+        if (texBG) {
+            renderPass.setPipeline(texPipeline);
+            renderPass.setBindGroup(0, texBG);
+            renderPass.draw(4);
+        }
+
+        renderPass.setPipeline(linePipeline);
+        renderPass.setVertexBuffer(0, lineVB);
+        renderPass.setBindGroup(0, lineBG);
+        renderPass.draw(lineVerts.length / 3);
+
+        renderPass.end();
+        device.queue.submit([commandEncoder.finish()]);
+    }
+
+    renderPartD();
+}
+
+function setupPartDUI(callbacks) {
+    const container = document.getElementById('d-curves');
+    if (!container || document.getElementById('btn-curve-type')) return;
+
+    const controlBar = document.createElement('div');
+    controlBar.className = 'ctl';
+    controlBar.style.marginTop = '10px';
+    controlBar.innerHTML = `
+        <button id="btn-curve-type" class="ctl button on">Type: Cubic Bézier</button>
+        <button id="btn-casteljau" class="ctl button on">De Casteljau: ON</button>
+        <button id="btn-anim-curve" class="ctl button">Animate $C(t)$</button>
+        <button id="btn-export-json" class="ctl button">Export JSON</button>
+    `;
+    container.appendChild(controlBar);
+
+    let isBezier = true;
+    const btnType = document.getElementById('btn-curve-type');
+    btnType.addEventListener('click', () => {
+        isBezier = !isBezier;
+        btnType.textContent = isBezier ? 'Type: Cubic Bézier' : 'Type: Catmull-Rom';
+        callbacks.onToggleType(isBezier ? 'bezier' : 'catmull');
+    });
+
+    let showCasteljau = true;
+    const btnCas = document.getElementById('btn-casteljau');
+    btnCas.addEventListener('click', () => {
+        showCasteljau = !showCasteljau;
+        btnCas.textContent = showCasteljau ? 'De Casteljau: ON' : 'De Casteljau: OFF';
+        btnCas.classList.toggle('on', showCasteljau);
+        callbacks.onToggleCasteljau(showCasteljau);
+    });
+
+    let isAnim = false;
+    const btnAnim = document.getElementById('btn-anim-curve');
+    btnAnim.addEventListener('click', () => {
+        isAnim = !isAnim;
+        btnAnim.classList.toggle('on', isAnim);
+        callbacks.onToggleAnim(isAnim);
+    });
+
+    document.getElementById('btn-export-json').addEventListener('click', () => callbacks.onExportJSON());
 }
 
 main();
