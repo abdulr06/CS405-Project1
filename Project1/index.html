@@ -132,7 +132,19 @@ footer{padding:26px 0 60px;color:var(--ink2);font-size:14px}
 <section id="c">
   <h2><span class="badge">Part C</span>Camera and projection <span class="badge pts">20 points</span></h2>
   <p>Derive the view matrix from an eye, a target and an up vector, then project with a perspective or an orthographic matrix. The frustum in the left panel is what the camera can actually see.</p>
-  <div class="demo" id="d-camera"></div>
+  <div class="demo" id="d-camera">
+    <div class="row">
+      <div>
+        <div class="cap">World view <span class="muted">— your camera drawn as a frustum</span></div>
+        <canvas id="canvas-cam-world" width="420" height="330"></canvas>
+      </div>
+      <div>
+        <div class="cap">What that camera sees</div>
+        <canvas id="canvas-cam-view" width="420" height="330"></canvas>
+      </div>
+    </div>
+    <pre class="mat wide" id="mat-camera" style="margin-top:10px;"></pre>
+  </div>
   <div class="grid2">
     <div>
       <h3>What you implement</h3>

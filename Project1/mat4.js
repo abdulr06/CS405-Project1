@@ -127,5 +127,78 @@ export const Mat4 = {
             str += '\n';
         }
         return str;
+    },
+
+    // lookAt(eye, target, up) - WebGPU Right-Handed View Matrix
+    lookAt(eye, target, up) {
+        // Forward vector f (from eye to target)
+        let fx = target[0] - eye[0];
+        let fy = target[1] - eye[1];
+        let fz = target[2] - eye[2];
+        let rlen = 1.0 / (Math.hypot(fx, fy, fz) || 1);
+        fx *= rlen; fy *= rlen; fz *= rlen;
+
+        // View direction w = -f (camera looks down -Z in view space)
+        const wx = -fx, wy = -fy, wz = -fz;
+
+        // Check degenerate case: up vector parallel to view direction
+        let ux = up[0], uy = up[1], uz = up[2];
+        const dotUp = Math.abs(wx * ux + wy * uy + wz * uz);
+        if (dotUp > 0.999) {
+            // Pick fallback up vector
+            ux = Math.abs(wz) < 0.999 ? 0 : 1;
+            uy = 1;
+            uz = 0;
+        }
+
+        // Right vector u = norm(cross(up, w))
+        let rx = uy * wz - uz * wy;
+        let ry = uz * wx - ux * wz;
+        let rz = ux * wy - uy * wx;
+        rlen = 1.0 / (Math.hypot(rx, ry, rz) || 1);
+        rx *= rlen; ry *= rlen; rz *= rlen;
+
+        // True Up vector v = cross(w, u)
+        const vx = wy * rz - wz * ry;
+        const vy = wz * rx - wx * rz;
+        const vz = wx * ry - wy * rx;
+
+        // Column-major View Matrix
+        return new Float32Array([
+            rx, vx, wx, 0,
+            ry, vy, wy, 0,
+            rz, vz, wz, 0,
+            -(rx * eye[0] + ry * eye[1] + rz * eye[2]),
+            -(vx * eye[0] + vy * eye[1] + vz * eye[2]),
+            -(wx * eye[0] + wy * eye[1] + wz * eye[2]),
+            1
+        ]);
+    },
+
+    // WebGPU Perspective Matrix: z in [0, 1]
+    perspective(fovY, aspect, near, far) {
+        const f = 1.0 / Math.tan(fovY / 2);
+        const rangeInv = 1.0 / (near - far);
+
+        return new Float32Array([
+            f / aspect, 0, 0, 0,
+            0, f, 0, 0,
+            0, 0, far * rangeInv, -1,
+            0, 0, near * far * rangeInv, 0
+        ]);
+    },
+
+    // WebGPU Orthographic Matrix: z in [0, 1]
+    ortho(height, aspect, near, far) {
+        const top = height / 2;
+        const right = top * aspect;
+        const rangeInv = 1.0 / (near - far);
+
+        return new Float32Array([
+            1 / right, 0, 0, 0,
+            0, 1 / top, 0, 0,
+            0, 0, rangeInv, 0,
+            0, 0, near * rangeInv, 1
+        ]);
     }
 };
