@@ -748,6 +748,7 @@ ${Mat4.format(Pc)}`;
 // -------------------------------------------------------------
 // PART D: Curves Over Painting
 // -------------------------------------------------------------
+
 function evalBezier(p0, p1, p2, p3, t) {
     const u = 1 - t;
     const tt = t * t;
@@ -833,9 +834,11 @@ async function setupPartD(device, format) {
         });
     }
 
+    // UPDATED: Added 3 more points to create a 3rd segment (10 points total)
     const rawPoints = [
         [0.10, 0.75], [0.22, 0.30], [0.38, 0.25], [0.50, 0.60],
-        [0.62, 0.95], [0.78, 0.70], [0.90, 0.35]
+        [0.62, 0.95], [0.78, 0.70], [0.90, 0.35], 
+        [0.95, 0.15], [0.70, 0.10], [0.50, 0.15]
     ];
 
     let curveType = 'bezier';
@@ -844,9 +847,13 @@ async function setupPartD(device, format) {
     let animT = 0;
     let draggedIdx = -1;
 
+    // UPDATED: Enforce C1 at both interior joints (P3 and P6)
     function enforceC1() {
         rawPoints[4][0] = 2 * rawPoints[3][0] - rawPoints[2][0];
         rawPoints[4][1] = 2 * rawPoints[3][1] - rawPoints[2][1];
+
+        rawPoints[7][0] = 2 * rawPoints[6][0] - rawPoints[5][0];
+        rawPoints[7][1] = 2 * rawPoints[6][1] - rawPoints[5][1];
     }
     enforceC1();
 
@@ -888,14 +895,21 @@ async function setupPartD(device, format) {
 
         rawPoints[draggedIdx] = [mx, my];
 
+        // UPDATED: Handle dragging for both joints and all handles
         if (draggedIdx === 3) {
             rawPoints[2][0] += dx; rawPoints[2][1] += dy;
             rawPoints[4][0] += dx; rawPoints[4][1] += dy;
-        } else if (draggedIdx === 2) {
+        } else if (draggedIdx === 6) {
+            rawPoints[5][0] += dx; rawPoints[5][1] += dy;
+            rawPoints[7][0] += dx; rawPoints[7][1] += dy;
+        } else if (draggedIdx === 2 || draggedIdx === 5) {
             enforceC1();
         } else if (draggedIdx === 4) {
             rawPoints[2][0] = 2 * rawPoints[3][0] - rawPoints[4][0];
             rawPoints[2][1] = 2 * rawPoints[3][1] - rawPoints[4][1];
+        } else if (draggedIdx === 7) {
+            rawPoints[5][0] = 2 * rawPoints[6][0] - rawPoints[7][0];
+            rawPoints[5][1] = 2 * rawPoints[6][1] - rawPoints[7][1];
         }
 
         exportJSON();
@@ -937,7 +951,8 @@ async function setupPartD(device, format) {
 
     function animLoop() {
         if (!isAnimating) return;
-        animT = (animT + 0.008) % 2.0;
+        // UPDATED: Wrap animT at 3.0 to match the 3 segments
+        animT = (animT + 0.008) % 3.0;
         renderPartD();
         requestAnimationFrame(animLoop);
     }
@@ -977,59 +992,89 @@ async function setupPartD(device, format) {
         }
 
         rawPoints.forEach((p, idx) => {
-            const isAnchor = (idx === 0 || idx === 3 || idx === 6);
+            const isAnchor = (idx % 3 === 0);
             addHandleMarker(p, isAnchor);
         });
 
         // 2. Curve Sampling
         const samples = 60;
         if (curveType === 'bezier') {
-            let prev = evalBezier(rawPoints[0], rawPoints[1], rawPoints[2], rawPoints[3], 0);
-            for (let i = 1; i <= samples; i++) {
-                const curr = evalBezier(rawPoints[0], rawPoints[1], rawPoints[2], rawPoints[3], i / samples);
-                lineVerts.push(...toNDC(prev, colCurve), ...toNDC(curr, colCurve));
-                prev = curr;
-            }
-            prev = evalBezier(rawPoints[3], rawPoints[4], rawPoints[5], rawPoints[6], 0);
-            for (let i = 1; i <= samples; i++) {
-                const curr = evalBezier(rawPoints[3], rawPoints[4], rawPoints[5], rawPoints[6], i / samples);
-                lineVerts.push(...toNDC(prev, colCurve), ...toNDC(curr, colCurve));
-                prev = curr;
+            // UPDATED: Dynamically sample all 3 segments
+            for (let seg = 0; seg < 3; seg++) {
+                let idx = seg * 3;
+                let prev = evalBezier(rawPoints[idx], rawPoints[idx+1], rawPoints[idx+2], rawPoints[idx+3], 0);
+                for (let i = 1; i <= samples; i++) {
+                    const curr = evalBezier(rawPoints[idx], rawPoints[idx+1], rawPoints[idx+2], rawPoints[idx+3], i / samples);
+                    lineVerts.push(...toNDC(prev, colCurve), ...toNDC(curr, colCurve));
+                    prev = curr;
+                }
             }
         } else {
-            let prev = evalCatmullRom(rawPoints[0], rawPoints[0], rawPoints[1], rawPoints[2], 0);
-            for (let i = 1; i <= samples * 2; i++) {
-                const segT = (i / (samples * 2)) * 2;
-                const curr = segT <= 1 ?
-                    evalCatmullRom(rawPoints[0], rawPoints[1], rawPoints[2], rawPoints[3], segT) :
-                    evalCatmullRom(rawPoints[1], rawPoints[2], rawPoints[3], rawPoints[4], segT - 1);
+            // UPDATED: Generic looping through any amount of Catmull-Rom points
+            const crSegs = rawPoints.length - 1;
+            let prev = rawPoints[0];
+            for (let i = 1; i <= samples * crSegs; i++) {
+                const globalT = (i / (samples * crSegs)) * crSegs;
+                const segIdx = Math.min(Math.floor(globalT), crSegs - 1);
+                const segT = globalT - segIdx;
+                
+                const p0 = rawPoints[Math.max(0, segIdx - 1)];
+                const p1 = rawPoints[segIdx];
+                const p2 = rawPoints[Math.min(rawPoints.length - 1, segIdx + 1)];
+                const p3 = rawPoints[Math.min(rawPoints.length - 1, segIdx + 2)];
+                
+                const curr = evalCatmullRom(p0, p1, p2, p3, segT);
                 lineVerts.push(...toNDC(prev, colCurve), ...toNDC(curr, colCurve));
                 prev = curr;
             }
         }
 
-        // 3. Marker & Tangent Vector
-        const segIndex = animT < 1.0 ? 0 : 1;
-        const localT = animT % 1.0;
+        // 3. Animated Object & Tangent Vector
+        const numSegments = 3;
+        const segIndex = Math.min(Math.floor(animT), numSegments - 1);
+        const localT = animT - segIndex;
         let pos, tan;
 
-        if (segIndex === 0) {
-            pos = evalBezier(rawPoints[0], rawPoints[1], rawPoints[2], rawPoints[3], localT);
-            tan = evalBezierTangent(rawPoints[0], rawPoints[1], rawPoints[2], rawPoints[3], localT);
+        if (curveType === 'bezier') {
+            const idx = segIndex * 3;
+            pos = evalBezier(rawPoints[idx], rawPoints[idx+1], rawPoints[idx+2], rawPoints[idx+3], localT);
+            tan = evalBezierTangent(rawPoints[idx], rawPoints[idx+1], rawPoints[idx+2], rawPoints[idx+3], localT);
         } else {
-            pos = evalBezier(rawPoints[3], rawPoints[4], rawPoints[5], rawPoints[6], localT);
-            tan = evalBezierTangent(rawPoints[3], rawPoints[4], rawPoints[5], rawPoints[6], localT);
+            const crSegs = rawPoints.length - 1;
+            const globalT = (animT / 3.0) * crSegs;
+            const cSegIdx = Math.min(Math.floor(globalT), crSegs - 1);
+            const cLocalT = globalT - cSegIdx;
+            
+            const p0 = rawPoints[Math.max(0, cSegIdx - 1)];
+            const p1 = rawPoints[cSegIdx];
+            const p2 = rawPoints[Math.min(rawPoints.length - 1, cSegIdx + 1)];
+            const p3 = rawPoints[Math.min(rawPoints.length - 1, cSegIdx + 2)];
+            
+            pos = evalCatmullRom(p0, p1, p2, p3, cLocalT);
+            const pos2 = evalCatmullRom(p0, p1, p2, p3, Math.min(1.0, cLocalT + 0.01));
+            tan = [pos2[0] - pos[0], pos2[1] - pos[1]];
         }
 
         const normTan = norm([tan[0], tan[1], 0]);
-        const tanTip = [pos[0] + normTan[0] * 0.08, pos[1] + normTan[1] * 0.08];
-        lineVerts.push(...toNDC(pos, colTan), ...toNDC(tanTip, colTan));
+        
+        // UPDATED: Draw a geometrical triangle oriented by the tangent instead of just a line
+        const size = 0.05;
+        const perp = [-normTan[1], normTan[0], 0];
+        
+        // Apply aspect ratio to keep the geometry uniform
+        const ar = canvas.width / canvas.height;
+        const pNose = [pos[0] + normTan[0] * size, pos[1] + normTan[1] * size * ar];
+        const pLeft = [pos[0] - normTan[0] * (size*0.5) + perp[0] * (size*0.4), pos[1] - normTan[1] * (size*0.5)*ar + perp[1] * (size*0.4)*ar];
+        const pRight = [pos[0] - normTan[0] * (size*0.5) - perp[0] * (size*0.4), pos[1] - normTan[1] * (size*0.5)*ar - perp[1] * (size*0.4)*ar];
+
+        lineVerts.push(...toNDC(pNose, colTan), ...toNDC(pLeft, colTan));
+        lineVerts.push(...toNDC(pLeft, colTan), ...toNDC(pRight, colTan));
+        lineVerts.push(...toNDC(pRight, colTan), ...toNDC(pNose, colTan));
 
         // 4. De Casteljau Lines
         if (showCasteljau && curveType === 'bezier') {
-            const p = segIndex === 0 ?
-                [rawPoints[0], rawPoints[1], rawPoints[2], rawPoints[3]] :
-                [rawPoints[3], rawPoints[4], rawPoints[5], rawPoints[6]];
+            const idx = segIndex * 3;
+            const p = [rawPoints[idx], rawPoints[idx+1], rawPoints[idx+2], rawPoints[idx+3]];
 
             const q0 = [p[0][0] + localT * (p[1][0] - p[0][0]), p[0][1] + localT * (p[1][1] - p[0][1])];
             const q1 = [p[1][0] + localT * (p[2][0] - p[1][0]), p[1][1] + localT * (p[2][1] - p[1][1])];
@@ -1072,7 +1117,6 @@ async function setupPartD(device, format) {
         renderPass.end();
         device.queue.submit([commandEncoder.finish()]);
     }
-
     renderPartD();
 }
 
