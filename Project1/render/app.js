@@ -3,6 +3,35 @@ import { SceneNode } from '../scene/scene.js';
 import { setupPartAUI, setupPartBUI, setupPartCUI, setupPartDUI } from '../ui/ui.js';
 
 // -------------------------------------------------------------
+// PART E: Performance Tracking
+// -------------------------------------------------------------
+export const Perf = {
+    verts: { a: 0, b: 0, c: 0, d: 0 },
+    lastTime: performance.now(),
+    fps: 60,
+    init() {
+        const elTime = document.getElementById('perf-time');
+        const elFps = document.getElementById('perf-fps');
+        const elVerts = document.getElementById('perf-verts');
+        
+        const loop = () => {
+            const now = performance.now();
+            const dt = now - Perf.lastTime;
+            Perf.lastTime = now;
+            
+            if (dt > 0) Perf.fps = Perf.fps * 0.9 + (1000 / dt) * 0.1;
+            
+            if (elTime) elTime.textContent = dt.toFixed(2) + ' ms';
+            if (elFps) elFps.textContent = Math.round(Perf.fps);
+            if (elVerts) elVerts.textContent = Perf.verts.a + Perf.verts.b + Perf.verts.c + Perf.verts.d;
+            
+            requestAnimationFrame(loop);
+        };
+        requestAnimationFrame(loop);
+    }
+};
+
+// -------------------------------------------------------------
 // Math & Camera Helpers
 // -------------------------------------------------------------
 function lookAt(eye, target, up) {
@@ -235,6 +264,8 @@ async function main() {
         }
     });
 
+    Perf.init();
+
     setupPartA(device, format, pipeline, vertexBuffer, indexBuffer);
     setupPartB(device, format, pipeline, vertexBuffer, indexBuffer);
     setupPartC(device, format);
@@ -257,7 +288,6 @@ function setupPartA(device, format, pipeline, vertexBuffer, indexBuffer) {
     ctxTRS.configure({ device, format, alphaMode: 'opaque' });
     ctxSRT.configure({ device, format, alphaMode: 'opaque' });
 
-    // Helper to generate distinct buffers and bind groups for multiple objects
     const createObjectData = () => {
         const bufferTRS = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
         const bufferSRT = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
@@ -269,8 +299,6 @@ function setupPartA(device, format, pipeline, vertexBuffer, indexBuffer) {
         };
     };
 
-    // Object 1: UI Controlled
-    // Object 2 & 3: Static background geometry to satisfy the 3-object requirement
     const objects = [
         { ...createObjectData(), isUI: true },
         { ...createObjectData(), isUI: false, tx: 2.0, ty: 1.0, tz: -2.0, ry: 0.5, scale: 0.6 },
@@ -304,7 +332,6 @@ function setupPartA(device, format, pipeline, vertexBuffer, indexBuffer) {
             device.queue.writeBuffer(obj.bufferTRS, 0, Mat4.multiply(VP, M_TRS));
             device.queue.writeBuffer(obj.bufferSRT, 0, Mat4.multiply(VP, M_SRT));
 
-            // Only update the matrix readout panel for the object actively controlled by the UI
             if (obj.isUI) {
                 if (matTRSEl) matTRSEl.textContent = Mat4.format(M_TRS);
                 if (matSRTEl) matSRTEl.textContent = Mat4.format(M_SRT);
@@ -313,6 +340,8 @@ function setupPartA(device, format, pipeline, vertexBuffer, indexBuffer) {
 
         drawPass(ctxTRS, depthTextureTRS, objects.map(o => o.bgTRS));
         drawPass(ctxSRT, depthTextureSRT, objects.map(o => o.bgSRT));
+
+        Perf.verts.a = objects.length * CUBE_INDICES.length * 2;
     }
 
     function drawPass(ctx, depthTexture, bindGroups) {
@@ -326,7 +355,6 @@ function setupPartA(device, format, pipeline, vertexBuffer, indexBuffer) {
         renderPass.setVertexBuffer(0, vertexBuffer);
         renderPass.setIndexBuffer(indexBuffer, 'uint16');
         
-        // Dispatch a draw call for every bind group in the array
         bindGroups.forEach(bg => {
             renderPass.setBindGroup(0, bg);
             renderPass.drawIndexed(CUBE_INDICES.length);
@@ -339,6 +367,7 @@ function setupPartA(device, format, pipeline, vertexBuffer, indexBuffer) {
     setupPartAUI(state, renderPartA);
     renderPartA();
 }
+
 // -------------------------------------------------------------
 // PART B: Scene Graph
 // -------------------------------------------------------------
@@ -352,7 +381,6 @@ function setupPartB(device, format, pipeline, vertexBuffer, indexBuffer) {
 
     const depthTexture = device.createTexture({ size: [canvas.width, canvas.height], format: 'depth24plus', usage: GPUTextureUsage.RENDER_ATTACHMENT });
 
-    // --- NEW: Line Pipeline for Debug Axes ---
     const shaderModule = device.createShaderModule({ code: SHADER_CODE });
     const linePipeline = device.createRenderPipeline({
         layout: 'auto',
@@ -372,7 +400,6 @@ function setupPartB(device, format, pipeline, vertexBuffer, indexBuffer) {
         depthStencil: { depthWriteEnabled: true, depthCompare: 'less', format: 'depth24plus' }
     });
 
-    // X (Red), Y (Green), Z (Blue) axes geometry
     const AXES_VERTICES = new Float32Array([
         0,0,0, 1,0.2,0.2,   1.5,0,0, 1,0.2,0.2,
         0,0,0, 0.2,1,0.2,   0,1.5,0, 0.2,1,0.2,
@@ -408,14 +435,12 @@ function setupPartB(device, format, pipeline, vertexBuffer, indexBuffer) {
     ];
 
     nodesToDraw.forEach(item => {
-        // Buffer for the mesh (Cubes)
         item.buffer = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
         item.bindGroup = device.createBindGroup({
             layout: pipeline.getBindGroupLayout(0),
             entries: [{ binding: 0, resource: { buffer: item.buffer } }]
         });
         
-        // --- NEW: Buffer for the local axes ---
         item.axesBuffer = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
         item.axesBindGroup = device.createBindGroup({
             layout: linePipeline.getBindGroupLayout(0),
@@ -424,11 +449,10 @@ function setupPartB(device, format, pipeline, vertexBuffer, indexBuffer) {
     });
 
     let isAnimated = false;
-    let showAxes = false; // State for debug axes
+    let showAxes = false;
     let animAngle = 0;
     let a1 = 3.14, a2 = 0.71, a3 = -0.77;
 
-    // Hook up the imported setupPartBUI
     setupPartBUI({ a1, a2, a3 }, (vals) => {
         if (vals.a1 !== undefined) a1 = vals.a1;
         if (vals.a2 !== undefined) a2 = vals.a2;
@@ -477,7 +501,6 @@ hand position in world:
         const P = perspective(Math.PI / 4, canvas.width / canvas.height, 0.1, 100.0);
         const VP = Mat4.multiply(P, V);
 
-        // Update uniform buffers
         nodesToDraw.forEach(item => {
             const S = Mat4.scale(item.node.scale[0], item.node.scale[1], item.node.scale[2]);
             const finalWorld = Mat4.multiply(item.node.worldMatrix, Mat4.multiply(item.meshOffset, S));
@@ -485,7 +508,6 @@ hand position in world:
             device.queue.writeBuffer(item.buffer, 0, Mat4.multiply(VP, finalWorld));
             
             if (showAxes) {
-                // Apply ONLY the worldMatrix to axes to represent local origin/orientation
                 device.queue.writeBuffer(item.axesBuffer, 0, Mat4.multiply(VP, item.node.worldMatrix));
             }
         });
@@ -496,7 +518,6 @@ hand position in world:
             depthStencilAttachment: { view: depthTexture.createView(), depthClearValue: 1.0, depthLoadOp: 'clear', depthStoreOp: 'store' }
         });
 
-        // 1. Draw Cubes
         renderPass.setPipeline(pipeline);
         renderPass.setVertexBuffer(0, vertexBuffer);
         renderPass.setIndexBuffer(indexBuffer, 'uint16');
@@ -505,25 +526,25 @@ hand position in world:
             renderPass.drawIndexed(CUBE_INDICES.length);
         });
 
-        // 2. Draw Debug Axes
         if (showAxes) {
             renderPass.setPipeline(linePipeline);
             renderPass.setVertexBuffer(0, axesVertexBuffer);
             nodesToDraw.forEach(item => {
                 renderPass.setBindGroup(0, item.axesBindGroup);
-                renderPass.draw(6); // 6 vertices = 3 lines
+                renderPass.draw(6);
             });
         }
 
         renderPass.end();
         device.queue.submit([commandEncoder.finish()]);
 
+        Perf.verts.b = nodesToDraw.length * CUBE_INDICES.length + (showAxes ? nodesToDraw.length * 6 : 0);
+
         requestAnimationFrame(renderPartB);
     }
 
     renderPartB();
 }
-
 
 // -------------------------------------------------------------
 // PART C: Camera and Projection
@@ -655,6 +676,8 @@ ${Mat4.format(Pc)}`;
 
         drawScene(ctxView, depthView, VPc, false);
         drawWorldView(ctxWorld, depthWorld, VPw, eye, target, up, aspect);
+
+        Perf.verts.c = (gridData.length / 3) * 2 + (boxes.length * CUBE_INDICES.length) * 2 + 26;
     }
 
     function drawScene(ctx, depthTexture, VP, isWorldPass) {
@@ -744,11 +767,9 @@ ${Mat4.format(Pc)}`;
     renderPartC();
 }
 
-
 // -------------------------------------------------------------
 // PART D: Curves Over Painting
 // -------------------------------------------------------------
-
 function evalBezier(p0, p1, p2, p3, t) {
     const u = 1 - t;
     const tt = t * t;
@@ -834,7 +855,6 @@ async function setupPartD(device, format) {
         });
     }
 
-    // UPDATED: Added 3 more points to create a 3rd segment (10 points total)
     const rawPoints = [
         [0.10, 0.75], [0.22, 0.30], [0.38, 0.25], [0.50, 0.60],
         [0.62, 0.95], [0.78, 0.70], [0.90, 0.35], 
@@ -847,7 +867,6 @@ async function setupPartD(device, format) {
     let animT = 0;
     let draggedIdx = -1;
 
-    // UPDATED: Enforce C1 at both interior joints (P3 and P6)
     function enforceC1() {
         rawPoints[4][0] = 2 * rawPoints[3][0] - rawPoints[2][0];
         rawPoints[4][1] = 2 * rawPoints[3][1] - rawPoints[2][1];
@@ -895,7 +914,6 @@ async function setupPartD(device, format) {
 
         rawPoints[draggedIdx] = [mx, my];
 
-        // UPDATED: Handle dragging for both joints and all handles
         if (draggedIdx === 3) {
             rawPoints[2][0] += dx; rawPoints[2][1] += dy;
             rawPoints[4][0] += dx; rawPoints[4][1] += dy;
@@ -951,7 +969,6 @@ async function setupPartD(device, format) {
 
     function animLoop() {
         if (!isAnimating) return;
-        // UPDATED: Wrap animT at 3.0 to match the 3 segments
         animT = (animT + 0.008) % 3.0;
         renderPartD();
         requestAnimationFrame(animLoop);
@@ -999,7 +1016,6 @@ async function setupPartD(device, format) {
         // 2. Curve Sampling
         const samples = 60;
         if (curveType === 'bezier') {
-            // UPDATED: Dynamically sample all 3 segments
             for (let seg = 0; seg < 3; seg++) {
                 let idx = seg * 3;
                 let prev = evalBezier(rawPoints[idx], rawPoints[idx+1], rawPoints[idx+2], rawPoints[idx+3], 0);
@@ -1010,7 +1026,6 @@ async function setupPartD(device, format) {
                 }
             }
         } else {
-            // UPDATED: Generic looping through any amount of Catmull-Rom points
             const crSegs = rawPoints.length - 1;
             let prev = rawPoints[0];
             for (let i = 1; i <= samples * crSegs; i++) {
@@ -1057,11 +1072,9 @@ async function setupPartD(device, format) {
 
         const normTan = norm([tan[0], tan[1], 0]);
         
-        // UPDATED: Draw a geometrical triangle oriented by the tangent instead of just a line
         const size = 0.05;
         const perp = [-normTan[1], normTan[0], 0];
         
-        // Apply aspect ratio to keep the geometry uniform
         const ar = canvas.width / canvas.height;
         const pNose = [pos[0] + normTan[0] * size, pos[1] + normTan[1] * size * ar];
         const pLeft = [pos[0] - normTan[0] * (size*0.5) + perp[0] * (size*0.4), pos[1] - normTan[1] * (size*0.5)*ar + perp[1] * (size*0.4)*ar];
@@ -1112,13 +1125,15 @@ async function setupPartD(device, format) {
         renderPass.setPipeline(curvePipeline);
         renderPass.setVertexBuffer(0, lineVB);
         renderPass.setBindGroup(0, curveBG);
-        renderPass.draw(lineVerts.length / 6); // 6 floats per vertex
+        renderPass.draw(lineVerts.length / 6);
 
         renderPass.end();
         device.queue.submit([commandEncoder.finish()]);
+
+        Perf.verts.d = (texBG ? 4 : 0) + (lineVerts.length / 6);
     }
+
     renderPartD();
 }
-
 
 main();
