@@ -352,6 +352,38 @@ function setupPartB(device, format, pipeline, vertexBuffer, indexBuffer) {
 
     const depthTexture = device.createTexture({ size: [canvas.width, canvas.height], format: 'depth24plus', usage: GPUTextureUsage.RENDER_ATTACHMENT });
 
+    // --- NEW: Line Pipeline for Debug Axes ---
+    const shaderModule = device.createShaderModule({ code: SHADER_CODE });
+    const linePipeline = device.createRenderPipeline({
+        layout: 'auto',
+        vertex: {
+            module: shaderModule,
+            entryPoint: 'vs_main',
+            buffers: [{
+                arrayStride: 24,
+                attributes: [
+                    { shaderLocation: 0, offset: 0, format: 'float32x3' },
+                    { shaderLocation: 1, offset: 12, format: 'float32x3' }
+                ]
+            }]
+        },
+        fragment: { module: shaderModule, entryPoint: 'fs_main', targets: [{ format }] },
+        primitive: { topology: 'line-list' },
+        depthStencil: { depthWriteEnabled: true, depthCompare: 'less', format: 'depth24plus' }
+    });
+
+    // X (Red), Y (Green), Z (Blue) axes geometry
+    const AXES_VERTICES = new Float32Array([
+        0,0,0, 1,0.2,0.2,   1.5,0,0, 1,0.2,0.2,
+        0,0,0, 0.2,1,0.2,   0,1.5,0, 0.2,1,0.2,
+        0,0,0, 0.2,0.2,1,   0,0,1.5, 0.2,0.2,1
+    ]);
+    const axesVertexBuffer = device.createBuffer({
+        size: AXES_VERTICES.byteLength,
+        usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(axesVertexBuffer, 0, AXES_VERTICES);
+
     const root = new SceneNode('root');
     const base = new SceneNode('base');
     const arm1 = new SceneNode('arm 1');
@@ -376,22 +408,33 @@ function setupPartB(device, format, pipeline, vertexBuffer, indexBuffer) {
     ];
 
     nodesToDraw.forEach(item => {
+        // Buffer for the mesh (Cubes)
         item.buffer = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
         item.bindGroup = device.createBindGroup({
             layout: pipeline.getBindGroupLayout(0),
             entries: [{ binding: 0, resource: { buffer: item.buffer } }]
         });
+        
+        // --- NEW: Buffer for the local axes ---
+        item.axesBuffer = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+        item.axesBindGroup = device.createBindGroup({
+            layout: linePipeline.getBindGroupLayout(0),
+            entries: [{ binding: 0, resource: { buffer: item.axesBuffer } }]
+        });
     });
 
     let isAnimated = false;
+    let showAxes = false; // State for debug axes
     let animAngle = 0;
     let a1 = 3.14, a2 = 0.71, a3 = -0.77;
 
-    setupPartBUI(a1, a2, a3, (vals, anim) => {
+    // Hook up the imported setupPartBUI
+    setupPartBUI({ a1, a2, a3 }, (vals) => {
         if (vals.a1 !== undefined) a1 = vals.a1;
         if (vals.a2 !== undefined) a2 = vals.a2;
         if (vals.a3 !== undefined) a3 = vals.a3;
-        if (anim !== undefined) isAnimated = anim;
+        if (vals.isAnimated !== undefined) isAnimated = vals.isAnimated;
+        if (vals.showAxes !== undefined) showAxes = vals.showAxes;
     });
 
     function renderPartB() {
@@ -434,10 +477,17 @@ hand position in world:
         const P = perspective(Math.PI / 4, canvas.width / canvas.height, 0.1, 100.0);
         const VP = Mat4.multiply(P, V);
 
+        // Update uniform buffers
         nodesToDraw.forEach(item => {
             const S = Mat4.scale(item.node.scale[0], item.node.scale[1], item.node.scale[2]);
             const finalWorld = Mat4.multiply(item.node.worldMatrix, Mat4.multiply(item.meshOffset, S));
+            
             device.queue.writeBuffer(item.buffer, 0, Mat4.multiply(VP, finalWorld));
+            
+            if (showAxes) {
+                // Apply ONLY the worldMatrix to axes to represent local origin/orientation
+                device.queue.writeBuffer(item.axesBuffer, 0, Mat4.multiply(VP, item.node.worldMatrix));
+            }
         });
 
         const commandEncoder = device.createCommandEncoder();
@@ -446,14 +496,24 @@ hand position in world:
             depthStencilAttachment: { view: depthTexture.createView(), depthClearValue: 1.0, depthLoadOp: 'clear', depthStoreOp: 'store' }
         });
 
+        // 1. Draw Cubes
         renderPass.setPipeline(pipeline);
         renderPass.setVertexBuffer(0, vertexBuffer);
         renderPass.setIndexBuffer(indexBuffer, 'uint16');
-
         nodesToDraw.forEach(item => {
             renderPass.setBindGroup(0, item.bindGroup);
             renderPass.drawIndexed(CUBE_INDICES.length);
         });
+
+        // 2. Draw Debug Axes
+        if (showAxes) {
+            renderPass.setPipeline(linePipeline);
+            renderPass.setVertexBuffer(0, axesVertexBuffer);
+            nodesToDraw.forEach(item => {
+                renderPass.setBindGroup(0, item.axesBindGroup);
+                renderPass.draw(6); // 6 vertices = 3 lines
+            });
+        }
 
         renderPass.end();
         device.queue.submit([commandEncoder.finish()]);
@@ -463,7 +523,6 @@ hand position in world:
 
     renderPartB();
 }
-
 
 
 // -------------------------------------------------------------
