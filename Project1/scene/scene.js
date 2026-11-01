@@ -1,5 +1,5 @@
 // scene.js
-import { Mat4 } from './mat4.js';
+import { Mat4 } from '../math/mat4.js';
 
 export class SceneNode {
     constructor(name) {

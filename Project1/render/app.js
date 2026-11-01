@@ -1,5 +1,5 @@
-import { Mat4 } from './mat4.js';
-import { SceneNode } from './scene.js';
+import { Mat4 } from '../math/mat4.js';
+import { SceneNode } from '../scene/scene.js';
 
 // -------------------------------------------------------------
 // Math & Camera Helpers
@@ -149,6 +149,36 @@ fn vs_main(@builtin(vertex_index) vertexIndex : u32) -> VertexOutput {
 @fragment
 fn fs_main(input : VertexOutput) -> @location(0) vec4<f32> {
     return textureSample(texData, texSampler, input.uv);
+}
+`;
+
+const CURVE_SHADER = /* wgsl */ `
+struct Uniforms {
+    mvpMatrix : mat4x4<f32>,
+};
+@group(0) @binding(0) var<uniform> uniforms : Uniforms;
+
+struct VertexInput {
+    @location(0) position : vec3<f32>,
+    @location(1) color : vec3<f32>,
+};
+
+struct VertexOutput {
+    @builtin(position) position : vec4<f32>,
+    @location(0) color : vec3<f32>,
+};
+
+@vertex
+fn vs_main(input : VertexInput) -> VertexOutput {
+    var output : VertexOutput;
+    output.position = uniforms.mvpMatrix * vec4<f32>(input.position, 1.0);
+    output.color = input.color;
+    return output;
+}
+
+@fragment
+fn fs_main(input : VertexOutput) -> @location(0) vec4<f32> {
+    return vec4<f32>(input.color, 1.0);
 }
 `;
 
@@ -889,11 +919,21 @@ async function setupPartD(device, format) {
     }
     exportJSON();
 
-    const lineShaderModule = device.createShaderModule({ code: LINE_SHADER });
-    const linePipeline = device.createRenderPipeline({
+    const curveShaderModule = device.createShaderModule({ code: CURVE_SHADER });
+    const curvePipeline = device.createRenderPipeline({
         layout: 'auto',
-        vertex: { module: lineShaderModule, entryPoint: 'vs_main', buffers: [{ arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }] }] },
-        fragment: { module: lineShaderModule, entryPoint: 'fs_main', targets: [{ format }] },
+        vertex: { 
+            module: curveShaderModule, 
+            entryPoint: 'vs_main', 
+            buffers: [{ 
+                arrayStride: 24, 
+                attributes: [
+                    { shaderLocation: 0, offset: 0, format: 'float32x3' },
+                    { shaderLocation: 1, offset: 12, format: 'float32x3' }
+                ] 
+            }] 
+        },
+        fragment: { module: curveShaderModule, entryPoint: 'fs_main', targets: [{ format }] },
         primitive: { topology: 'line-list' },
         depthStencil: { depthWriteEnabled: false, depthCompare: 'always', format: 'depth24plus' }
     });
@@ -908,13 +948,17 @@ async function setupPartD(device, format) {
     }
 
     function renderPartD() {
-        // Generate Curve Wireframe Lines in NDC [-1, 1] Space
         const lineVerts = [];
-        const toNDC = (p) => [p[0] * 2 - 1, 1 - p[1] * 2, 0];
+        const toNDC = (p, c) => [p[0] * 2 - 1, 1 - p[1] * 2, 0, c[0], c[1], c[2]];
+
+        const colCtrl = [0.6, 0.6, 0.6];       // Gray handles & polygon
+        const colCas1 = [0.2, 0.8, 0.9];       // Cyan level 1
+        const colCas2 = [0.9, 0.3, 0.8];       // Magenta level 2
+        const colCurve = [0.95, 0.75, 0.2];    // Gold main curve
+        const colTan = [0.2, 0.9, 0.3];        // Green tangent marker
 
         const aspect = canvas.width / canvas.height;
 
-        // Helper to draw a square handle marker (+) at a control point
         const addHandleMarker = (p, isAnchor = false) => {
             const rx = isAnchor ? 0.014 : 0.010;
             const ry = rx * aspect;
@@ -924,60 +968,52 @@ async function setupPartD(device, format) {
             const c2 = [p[0] + rx, p[1] + ry];
             const c3 = [p[0] - rx, p[1] + ry];
 
-            // Outer box
-            lineVerts.push(...toNDC(c0), ...toNDC(c1));
-            lineVerts.push(...toNDC(c1), ...toNDC(c2));
-            lineVerts.push(...toNDC(c2), ...toNDC(c3));
-            lineVerts.push(...toNDC(c3), ...toNDC(c0));
-
-            // Inner crosshair
-            lineVerts.push(...toNDC([p[0] - rx, p[1]]), ...toNDC([p[0] + rx, p[1]]));
-            lineVerts.push(...toNDC([p[0], p[1] - ry]), ...toNDC([p[0], p[1] + ry]));
+            lineVerts.push(...toNDC(c0, colCtrl), ...toNDC(c1, colCtrl));
+            lineVerts.push(...toNDC(c1, colCtrl), ...toNDC(c2, colCtrl));
+            lineVerts.push(...toNDC(c2, colCtrl), ...toNDC(c3, colCtrl));
+            lineVerts.push(...toNDC(c3, colCtrl), ...toNDC(c0, colCtrl));
+            lineVerts.push(...toNDC([p[0] - rx, p[1]], colCtrl), ...toNDC([p[0] + rx, p[1]], colCtrl));
+            lineVerts.push(...toNDC([p[0], p[1] - ry], colCtrl), ...toNDC([p[0], p[1] + ry], colCtrl));
         };
 
-        // 1. Draw Control Polygon Lines
+        // 1. Control Polygon & Handles
         for (let i = 0; i < rawPoints.length - 1; i++) {
-            lineVerts.push(...toNDC(rawPoints[i]), ...toNDC(rawPoints[i + 1]));
+            lineVerts.push(...toNDC(rawPoints[i], colCtrl), ...toNDC(rawPoints[i + 1], colCtrl));
         }
 
-        // 2. Draw Handle Dots/Markers for every control point
         rawPoints.forEach((p, idx) => {
-            // Anchor points (P0, P3, P6) get slightly larger boxes than control handles
             const isAnchor = (idx === 0 || idx === 3 || idx === 6);
             addHandleMarker(p, isAnchor);
         });
 
-        // 3. Evaluate & Draw Curve Segments
+        // 2. Curve Sampling
         const samples = 60;
         if (curveType === 'bezier') {
-            // Segment 1 (P0, P1, P2, P3)
             let prev = evalBezier(rawPoints[0], rawPoints[1], rawPoints[2], rawPoints[3], 0);
             for (let i = 1; i <= samples; i++) {
                 const curr = evalBezier(rawPoints[0], rawPoints[1], rawPoints[2], rawPoints[3], i / samples);
-                lineVerts.push(...toNDC(prev), ...toNDC(curr));
+                lineVerts.push(...toNDC(prev, colCurve), ...toNDC(curr, colCurve));
                 prev = curr;
             }
-            // Segment 2 (P3, P4, P5, P6)
             prev = evalBezier(rawPoints[3], rawPoints[4], rawPoints[5], rawPoints[6], 0);
             for (let i = 1; i <= samples; i++) {
                 const curr = evalBezier(rawPoints[3], rawPoints[4], rawPoints[5], rawPoints[6], i / samples);
-                lineVerts.push(...toNDC(prev), ...toNDC(curr));
+                lineVerts.push(...toNDC(prev, colCurve), ...toNDC(curr, colCurve));
                 prev = curr;
             }
         } else {
-            // Catmull-Rom Evaluation
             let prev = evalCatmullRom(rawPoints[0], rawPoints[0], rawPoints[1], rawPoints[2], 0);
             for (let i = 1; i <= samples * 2; i++) {
                 const segT = (i / (samples * 2)) * 2;
                 const curr = segT <= 1 ?
                     evalCatmullRom(rawPoints[0], rawPoints[1], rawPoints[2], rawPoints[3], segT) :
                     evalCatmullRom(rawPoints[1], rawPoints[2], rawPoints[3], rawPoints[4], segT - 1);
-                lineVerts.push(...toNDC(prev), ...toNDC(curr));
+                lineVerts.push(...toNDC(prev, colCurve), ...toNDC(curr, colCurve));
                 prev = curr;
             }
         }
 
-        // 4. Animated Marker & Tangent Vector along C(t)
+        // 3. Marker & Tangent Vector
         const segIndex = animT < 1.0 ? 0 : 1;
         const localT = animT % 1.0;
         let pos, tan;
@@ -992,9 +1028,9 @@ async function setupPartD(device, format) {
 
         const normTan = norm([tan[0], tan[1], 0]);
         const tanTip = [pos[0] + normTan[0] * 0.08, pos[1] + normTan[1] * 0.08];
-        lineVerts.push(...toNDC(pos), ...toNDC(tanTip));
+        lineVerts.push(...toNDC(pos, colTan), ...toNDC(tanTip, colTan));
 
-        // 5. De Casteljau Lines
+        // 4. De Casteljau Lines
         if (showCasteljau && curveType === 'bezier') {
             const p = segIndex === 0 ?
                 [rawPoints[0], rawPoints[1], rawPoints[2], rawPoints[3]] :
@@ -1007,20 +1043,19 @@ async function setupPartD(device, format) {
             const r0 = [q0[0] + localT * (q1[0] - q0[0]), q0[1] + localT * (q1[1] - q0[1])];
             const r1 = [q1[0] + localT * (q2[0] - q1[0]), q1[1] + localT * (q2[1] - q1[1])];
 
-            lineVerts.push(...toNDC(q0), ...toNDC(q1), ...toNDC(q1), ...toNDC(q2));
-            lineVerts.push(...toNDC(r0), ...toNDC(r1));
+            lineVerts.push(...toNDC(q0, colCas1), ...toNDC(q1, colCas1), ...toNDC(q1, colCas1), ...toNDC(q2, colCas1));
+            lineVerts.push(...toNDC(r0, colCas2), ...toNDC(r1, colCas2));
         }
 
         const lineVB = device.createBuffer({ size: Math.max(128, lineVerts.length * 4), usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
         device.queue.writeBuffer(lineVB, 0, new Float32Array(lineVerts));
 
-        const lineUB = device.createBuffer({ size: 80, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-        const lineBG = device.createBindGroup({ layout: linePipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: lineUB } }] });
+        const curveUB = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+        const curveBG = device.createBindGroup({ layout: curvePipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: curveUB } }] });
 
-        const lineUniforms = new Float32Array(20);
-        lineUniforms.set(Mat4.create(), 0);
-        lineUniforms.set([0.95, 0.75, 0.2, 1.0], 16);
-        device.queue.writeBuffer(lineUB, 0, lineUniforms);
+        const curveUniforms = new Float32Array(16);
+        curveUniforms.set(Mat4.create(), 0);
+        device.queue.writeBuffer(curveUB, 0, curveUniforms);
 
         const commandEncoder = device.createCommandEncoder();
         const renderPass = commandEncoder.beginRenderPass({
@@ -1034,10 +1069,10 @@ async function setupPartD(device, format) {
             renderPass.draw(4);
         }
 
-        renderPass.setPipeline(linePipeline);
+        renderPass.setPipeline(curvePipeline);
         renderPass.setVertexBuffer(0, lineVB);
-        renderPass.setBindGroup(0, lineBG);
-        renderPass.draw(lineVerts.length / 3);
+        renderPass.setBindGroup(0, curveBG);
+        renderPass.draw(lineVerts.length / 6); // 6 floats per vertex
 
         renderPass.end();
         device.queue.submit([commandEncoder.finish()]);

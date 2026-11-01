@@ -43,17 +43,39 @@ footer{padding:20px 0 40px;color:var(--ink2);font-size:14px}
 </head>
 <body>
 
+  <div id="perf-bar" style="position: fixed; bottom: 20px; left: 20px; z-index: 999; background: var(--panel); padding: 10px 15px; border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); font-family: var(--mono); font-size: 12px; display: flex; flex-direction: column; gap: 8px;">
+  <div>Frame Time: <strong id="perf-time" style="color:var(--accent2);">0.00 ms</strong></div>
+  <div>FPS: <strong id="perf-fps" style="color:var(--accent3);">60</strong></div>
+  <div>Vertices: <strong id="perf-verts" style="color:var(--accent);">0</strong></div>
+  <button id="btn-reset-all" class="ctl button" style="margin-top: 4px; padding: 4px; text-align: center; width: 100%;" onclick="window.location.reload();">Reset Scene</button>
+</div>
+
+
 <header><div class="wrap">
   <h1>Project 1 · Transformations, Projection &amp; Curves from Paintings</h1>
   <p class="lead">CS405 Introduction to Computer Graphics · WebGPU Interactive Dashboard</p>
 </div></header>
 
-<nav><div class="wrap">
-  <a href="#a">A · Transformations</a>
-  <a href="#b">B · Scene graph</a>
-  <a href="#c">C · Camera &amp; projection</a>
-  <a href="#d">D · Curves</a>
+<nav><div class="wrap" style="display: flex; gap: 15px;">
+  <button class="ctl button on" onclick="showPart('all')">Show All</button>
+  <button class="ctl button" onclick="showPart('a')">A · Transformations</button>
+  <button class="ctl button" onclick="showPart('b')">B · Scene graph</button>
+  <button class="ctl button" onclick="showPart('c')">C · Camera</button>
+  <button class="ctl button" onclick="showPart('d')">D · Curves</button>
 </div></nav>
+
+<script>
+  function showPart(partId) {
+      // Update button styles
+      document.querySelectorAll('nav button').forEach(btn => btn.classList.remove('on'));
+      event.target.classList.add('on');
+      
+      // Show/Hide sections
+      document.querySelectorAll('section').forEach(sec => {
+          sec.style.display = (partId === 'all' || sec.id === partId) ? 'block' : 'none';
+      });
+  }
+</script>
 
 <div class="wrap">
 
@@ -124,6 +146,6 @@ footer{padding:20px 0 40px;color:var(--ink2);font-size:14px}
 <footer><div class="wrap">CS405 · Sabancı University · Sakıp Sabancı Museum Collection</div></footer>
 
 <script src="assets/kavunlu.js"></script>
-<script type="module" src="app.js"></script>
+<script type="module" src="render/app.js"></script>
 </body>
 </html>
