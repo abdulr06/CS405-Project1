@@ -1,5 +1,6 @@
 import { Mat4 } from '../math/mat4.js';
 import { SceneNode } from '../scene/scene.js';
+import { setupPartAUI, setupPartBUI, setupPartCUI, setupPartDUI } from '../ui/ui.js';
 
 // -------------------------------------------------------------
 // Math & Camera Helpers
@@ -256,18 +257,25 @@ function setupPartA(device, format, pipeline, vertexBuffer, indexBuffer) {
     ctxTRS.configure({ device, format, alphaMode: 'opaque' });
     ctxSRT.configure({ device, format, alphaMode: 'opaque' });
 
-    const uniformBufferTRS = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-    const uniformBufferSRT = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    // Helper to generate distinct buffers and bind groups for multiple objects
+    const createObjectData = () => {
+        const bufferTRS = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+        const bufferSRT = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+        return {
+            bufferTRS,
+            bufferSRT,
+            bgTRS: device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: bufferTRS } }] }),
+            bgSRT: device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: bufferSRT } }] })
+        };
+    };
 
-    const bindGroupTRS = device.createBindGroup({
-        layout: pipeline.getBindGroupLayout(0),
-        entries: [{ binding: 0, resource: { buffer: uniformBufferTRS } }]
-    });
-
-    const bindGroupSRT = device.createBindGroup({
-        layout: pipeline.getBindGroupLayout(0),
-        entries: [{ binding: 0, resource: { buffer: uniformBufferSRT } }]
-    });
+    // Object 1: UI Controlled
+    // Object 2 & 3: Static background geometry to satisfy the 3-object requirement
+    const objects = [
+        { ...createObjectData(), isUI: true },
+        { ...createObjectData(), isUI: false, tx: 2.0, ty: 1.0, tz: -2.0, ry: 0.5, scale: 0.6 },
+        { ...createObjectData(), isUI: false, tx: -1.5, ty: -0.5, tz: 1.0, ry: -0.8, scale: 0.4 }
+    ];
 
     const depthTextureTRS = device.createTexture({ size: [canvasTRS.width, canvasTRS.height], format: 'depth24plus', usage: GPUTextureUsage.RENDER_ATTACHMENT });
     const depthTextureSRT = device.createTexture({ size: [canvasSRT.width, canvasSRT.height], format: 'depth24plus', usage: GPUTextureUsage.RENDER_ATTACHMENT });
@@ -279,34 +287,51 @@ function setupPartA(device, format, pipeline, vertexBuffer, indexBuffer) {
         const P = perspective(Math.PI / 4, canvasTRS.width / canvasTRS.height, 0.1, 100.0);
         const VP = Mat4.multiply(P, V);
 
-        const T = Mat4.translate(state.tx, 0, 0);
-        const R = Mat4.rotateY(state.ry);
-        const S = Mat4.scale(state.scale, state.scale, state.scale);
+        objects.forEach((obj) => {
+            const tx = obj.isUI ? state.tx : obj.tx;
+            const ty = obj.isUI ? 0 : obj.ty;
+            const tz = obj.isUI ? 0 : obj.tz;
+            const ry = obj.isUI ? state.ry : obj.ry;
+            const s = obj.isUI ? state.scale : obj.scale;
 
-        const M_TRS = Mat4.multiply(T, Mat4.multiply(R, S));
-        const M_SRT = Mat4.multiply(S, Mat4.multiply(R, T));
+            const T = Mat4.translate(tx, ty, tz);
+            const R = Mat4.rotateY(ry);
+            const S = Mat4.scale(s, s, s);
 
-        device.queue.writeBuffer(uniformBufferTRS, 0, Mat4.multiply(VP, M_TRS));
-        device.queue.writeBuffer(uniformBufferSRT, 0, Mat4.multiply(VP, M_SRT));
+            const M_TRS = Mat4.multiply(T, Mat4.multiply(R, S));
+            const M_SRT = Mat4.multiply(S, Mat4.multiply(R, T));
 
-        if (matTRSEl) matTRSEl.textContent = Mat4.format(M_TRS);
-        if (matSRTEl) matSRTEl.textContent = Mat4.format(M_SRT);
+            device.queue.writeBuffer(obj.bufferTRS, 0, Mat4.multiply(VP, M_TRS));
+            device.queue.writeBuffer(obj.bufferSRT, 0, Mat4.multiply(VP, M_SRT));
 
-        drawPass(ctxTRS, depthTextureTRS, bindGroupTRS);
-        drawPass(ctxSRT, depthTextureSRT, bindGroupSRT);
+            // Only update the matrix readout panel for the object actively controlled by the UI
+            if (obj.isUI) {
+                if (matTRSEl) matTRSEl.textContent = Mat4.format(M_TRS);
+                if (matSRTEl) matSRTEl.textContent = Mat4.format(M_SRT);
+            }
+        });
+
+        drawPass(ctxTRS, depthTextureTRS, objects.map(o => o.bgTRS));
+        drawPass(ctxSRT, depthTextureSRT, objects.map(o => o.bgSRT));
     }
 
-    function drawPass(ctx, depthTexture, bindGroup) {
+    function drawPass(ctx, depthTexture, bindGroups) {
         const commandEncoder = device.createCommandEncoder();
         const renderPass = commandEncoder.beginRenderPass({
             colorAttachments: [{ view: ctx.getCurrentTexture().createView(), clearValue: { r: 0.1, g: 0.1, b: 0.12, a: 1.0 }, loadOp: 'clear', storeOp: 'store' }],
             depthStencilAttachment: { view: depthTexture.createView(), depthClearValue: 1.0, depthLoadOp: 'clear', depthStoreOp: 'store' }
         });
+        
         renderPass.setPipeline(pipeline);
-        renderPass.setBindGroup(0, bindGroup);
         renderPass.setVertexBuffer(0, vertexBuffer);
         renderPass.setIndexBuffer(indexBuffer, 'uint16');
-        renderPass.drawIndexed(CUBE_INDICES.length);
+        
+        // Dispatch a draw call for every bind group in the array
+        bindGroups.forEach(bg => {
+            renderPass.setBindGroup(0, bg);
+            renderPass.drawIndexed(CUBE_INDICES.length);
+        });
+        
         renderPass.end();
         device.queue.submit([commandEncoder.finish()]);
     }
@@ -314,35 +339,6 @@ function setupPartA(device, format, pipeline, vertexBuffer, indexBuffer) {
     setupPartAUI(state, renderPartA);
     renderPartA();
 }
-
-function setupPartAUI(state, onChange) {
-    const container = document.getElementById('d-order');
-    if (!container || document.getElementById('slider-tx')) return;
-
-    const controlBar = document.createElement('div');
-    controlBar.className = 'ctl';
-    controlBar.style.marginTop = '15px';
-    controlBar.innerHTML = `
-        <label>Translate X: 
-            <input type="range" id="slider-tx" min="-3" max="3" step="0.1" value="${state.tx}">
-            <span class="val" id="val-tx">${state.tx}</span>
-        </label>
-        <label>Rotate Y: 
-            <input type="range" id="slider-ry" min="-3.14" max="3.14" step="0.05" value="${state.ry}">
-            <span class="val" id="val-ry">${state.ry}</span>
-        </label>
-        <label>Scale: 
-            <input type="range" id="slider-s" min="0.3" max="2.5" step="0.05" value="${state.scale}">
-            <span class="val" id="val-s">${state.scale}</span>
-        </label>
-    `;
-    container.appendChild(controlBar);
-
-    document.getElementById('slider-tx').addEventListener('input', (e) => { state.tx = parseFloat(e.target.value); document.getElementById('val-tx').textContent = state.tx.toFixed(1); onChange(); });
-    document.getElementById('slider-ry').addEventListener('input', (e) => { state.ry = parseFloat(e.target.value); document.getElementById('val-ry').textContent = state.ry.toFixed(2); onChange(); });
-    document.getElementById('slider-s').addEventListener('input', (e) => { state.scale = parseFloat(e.target.value); document.getElementById('val-s').textContent = state.scale.toFixed(2); onChange(); });
-}
-
 // -------------------------------------------------------------
 // PART B: Scene Graph
 // -------------------------------------------------------------
@@ -468,39 +464,7 @@ hand position in world:
     renderPartB();
 }
 
-function setupPartBUI(a1, a2, a3, onChange) {
-    const container = document.getElementById('d-graph');
-    if (!container || document.getElementById('slider-b-a1')) return;
 
-    const controlBar = document.createElement('div');
-    controlBar.className = 'ctl';
-    controlBar.style.marginTop = '10px';
-    controlBar.innerHTML = `
-        <label>Base Rotation: 
-            <input type="range" id="slider-b-a1" min="-3.14" max="3.14" step="0.02" value="${a1}">
-        </label>
-        <label>Joint 1: 
-            <input type="range" id="slider-b-a2" min="-1.5" max="1.5" step="0.02" value="${a2}">
-        </label>
-        <label>Joint 2: 
-            <input type="range" id="slider-b-a3" min="-1.5" max="1.5" step="0.02" value="${a3}">
-        </label>
-        <button id="btn-animate" class="ctl button">Animate</button>
-    `;
-    container.appendChild(controlBar);
-
-    document.getElementById('slider-b-a1').addEventListener('input', (e) => onChange({ a1: parseFloat(e.target.value) }));
-    document.getElementById('slider-b-a2').addEventListener('input', (e) => onChange({ a2: parseFloat(e.target.value) }));
-    document.getElementById('slider-b-a3').addEventListener('input', (e) => onChange({ a3: parseFloat(e.target.value) }));
-
-    let isAnim = false;
-    const btn = document.getElementById('btn-animate');
-    btn.addEventListener('click', () => {
-        isAnim = !isAnim;
-        btn.classList.toggle('on', isAnim);
-        onChange({}, isAnim);
-    });
-}
 
 // -------------------------------------------------------------
 // PART C: Camera and Projection
@@ -717,38 +681,6 @@ ${Mat4.format(Pc)}`;
     renderPartC();
 }
 
-function setupPartCUI(cam, onChange) {
-    const container = document.getElementById('d-camera');
-    if (!container || document.getElementById('slider-cyaw')) return;
-
-    const controlBar = document.createElement('div');
-    controlBar.className = 'ctl';
-    controlBar.style.marginTop = '10px';
-    controlBar.innerHTML = `
-        <label>Azimuth: <input type="range" id="slider-cyaw" min="-3.14" max="3.14" step="0.02" value="${cam.cyaw}"></label>
-        <label>Height: <input type="range" id="slider-cpitch" min="-0.3" max="1.4" step="0.02" value="${cam.cpitch}"></label>
-        <label>Distance: <input type="range" id="slider-cdist" min="2" max="12" step="0.1" value="${cam.cdist}"></label>
-        <label>FOV (°): <input type="range" id="slider-fov" min="15" max="100" step="1" value="${cam.fov}"></label>
-        <label>Near: <input type="range" id="slider-near" min="0.2" max="4" step="0.1" value="${cam.near}"></label>
-        <label>Far: <input type="range" id="slider-far" min="3" max="14" step="0.5" value="${cam.far}"></label>
-        <button id="btn-proj-toggle" class="ctl button on">Perspective / Orthographic</button>
-    `;
-    container.appendChild(controlBar);
-
-    document.getElementById('slider-cyaw').addEventListener('input', (e) => { cam.cyaw = parseFloat(e.target.value); onChange(); });
-    document.getElementById('slider-cpitch').addEventListener('input', (e) => { cam.cpitch = parseFloat(e.target.value); onChange(); });
-    document.getElementById('slider-cdist').addEventListener('input', (e) => { cam.cdist = parseFloat(e.target.value); onChange(); });
-    document.getElementById('slider-fov').addEventListener('input', (e) => { cam.fov = parseFloat(e.target.value); onChange(); });
-    document.getElementById('slider-near').addEventListener('input', (e) => { cam.near = parseFloat(e.target.value); onChange(); });
-    document.getElementById('slider-far').addEventListener('input', (e) => { cam.far = parseFloat(e.target.value); onChange(); });
-
-    const btnProj = document.getElementById('btn-proj-toggle');
-    btnProj.addEventListener('click', () => {
-        cam.isPersp = !cam.isPersp;
-        btnProj.classList.toggle('on', cam.isPersp);
-        onChange();
-    });
-}
 
 // -------------------------------------------------------------
 // PART D: Curves Over Painting
@@ -1081,47 +1013,5 @@ async function setupPartD(device, format) {
     renderPartD();
 }
 
-function setupPartDUI(callbacks) {
-    const container = document.getElementById('d-curves');
-    if (!container || document.getElementById('btn-curve-type')) return;
-
-    const controlBar = document.createElement('div');
-    controlBar.className = 'ctl';
-    controlBar.style.marginTop = '10px';
-    controlBar.innerHTML = `
-        <button id="btn-curve-type" class="ctl button on">Type: Cubic Bézier</button>
-        <button id="btn-casteljau" class="ctl button on">De Casteljau: ON</button>
-        <button id="btn-anim-curve" class="ctl button">Animate $C(t)$</button>
-        <button id="btn-export-json" class="ctl button">Export JSON</button>
-    `;
-    container.appendChild(controlBar);
-
-    let isBezier = true;
-    const btnType = document.getElementById('btn-curve-type');
-    btnType.addEventListener('click', () => {
-        isBezier = !isBezier;
-        btnType.textContent = isBezier ? 'Type: Cubic Bézier' : 'Type: Catmull-Rom';
-        callbacks.onToggleType(isBezier ? 'bezier' : 'catmull');
-    });
-
-    let showCasteljau = true;
-    const btnCas = document.getElementById('btn-casteljau');
-    btnCas.addEventListener('click', () => {
-        showCasteljau = !showCasteljau;
-        btnCas.textContent = showCasteljau ? 'De Casteljau: ON' : 'De Casteljau: OFF';
-        btnCas.classList.toggle('on', showCasteljau);
-        callbacks.onToggleCasteljau(showCasteljau);
-    });
-
-    let isAnim = false;
-    const btnAnim = document.getElementById('btn-anim-curve');
-    btnAnim.addEventListener('click', () => {
-        isAnim = !isAnim;
-        btnAnim.classList.toggle('on', isAnim);
-        callbacks.onToggleAnim(isAnim);
-    });
-
-    document.getElementById('btn-export-json').addEventListener('click', () => callbacks.onExportJSON());
-}
 
 main();
