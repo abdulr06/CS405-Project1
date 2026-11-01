@@ -579,7 +579,9 @@ function setupPartC(device, format) {
     const depthView = device.createTexture({ size: [canvasView.width, canvasView.height], format: 'depth24plus', usage: GPUTextureUsage.RENDER_ATTACHMENT });
 
     const boxes = [
-        { pos: [0, 0.5, 0], scale: [1.0, 1.0, 1.0] }
+        { pos: [-2, 0.5, -1], scale: [1.0, 1.0, 1.0] },
+        { pos: [0.6, 0.8, 0.4], scale: [1.6, 1.6, 1.6] },
+        { pos: [2.2, 0.4, -1.6], scale: [0.8, 0.8, 0.8] }
     ];
 
     boxes.forEach(b => {
@@ -641,9 +643,11 @@ function setupPartC(device, format) {
 
         if (matInfo) {
             matInfo.textContent = 
-`V = lookAt(eye, target, up)
+`eye: (${eye[0].toFixed(2)}, ${eye[1].toFixed(2)}, ${eye[2].toFixed(2)})
+target: (${target[0].toFixed(2)}, ${target[1].toFixed(2)}, ${target[2].toFixed(2)})
+V = lookAt(eye, target, up)
 ${Mat4.format(Vc)}
-${cam.isPersp ? 'P = perspective(fov, aspect, near, far)' : 'P = orthographic(height, aspect, near, far)'}
+${cam.isPersp ? `P = perspective(${cam.fov}°, aspect, ${cam.near}, ${cam.far})` : `P = orthographic(height, aspect, ${cam.near}, ${cam.far})`}
 ${Mat4.format(Pc)}`;
         }
 
